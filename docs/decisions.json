@@ -80,6 +80,70 @@
       "decision": "1. Vector Clock Engine → 2. Storage Adapter → 3. Core Node Service → 4. Replication Manager → 5. REST API → 6. Demo/Tests",
       "rationale": "Bottom-up: lower layers first. Each layer tested before next depends on it.",
       "status": "approved"
+    },
+    {
+      "id": "D011",
+      "date": "2026-03-24",
+      "title": "Innovation Feature #1: Quorum-Based Consistency",
+      "decision": "Implement configurable N (replicas), R (read replicas), W (write replicas) parameters",
+      "rationale": "Direct from Dynamo paper. Allows tuning consistency vs. availability. Demonstrates production-grade thinking. Academic strength: R + W > N guarantees consistency.",
+      "implementation": "Add to Node config: N=3, W=2, R=2. Enforce in replication.sync()",
+      "impact": "Professors immediately recognize Dynamo/Cassandra architecture",
+      "status": "approved"
+    },
+    {
+      "id": "D012",
+      "date": "2026-03-24",
+      "title": "Innovation Feature #2: Conflict Visualization",
+      "decision": "Display concurrent versions with their vector clocks and metadata",
+      "rationale": "Makes invisible distributed behavior visible. Strong presentation tool. Shows causality detection in action.",
+      "implementation": "CLI output + JSON export: { key, versions: [{vc, author, value}, ...] }",
+      "example": "user_123: [{ vc: {A:2,B:0}, value: 'Alice' }, { vc: {A:1,B:1}, value: 'Alicia' }]",
+      "impact": "Demonstrable on whiteboard or demo. Clarifies concurrent update detection.",
+      "status": "approved"
+    },
+    {
+      "id": "D013",
+      "date": "2026-03-24",
+      "title": "Conflict Resolution Strategies",
+      "decision": "Support multiple strategies: multi-version (default), last-write-wins (LWW), custom merge",
+      "rationale": "Shows extensibility. LWW common in practice. Custom lets teams implement domain logic.",
+      "status": "approved"
+    },
+    {
+      "id": "D014",
+      "date": "2026-03-24",
+      "title": "CLI Interface Layer",
+      "decision": "Build interactive CLI using Python click/typer for manual operations and debugging",
+      "rationale": "Enables direct node control without UI. Essential for teaching and demo scenarios. Easy to show causality step-by-step.",
+      "commands": [
+        "repliqia node --id A --port 5000 [start node]",
+        "repliqia put key value [write to node]",
+        "repliqia get key [read from node]",
+        "repliqia sync --with B [trigger peer sync]",
+        "repliqia show [display node state]",
+        "repliqia conflicts [show all conflicts]"
+      ],
+      "benefit": "Professors can follow exact sequence of operations → causality becomes visible",
+      "status": "approved"
+    },
+    {
+      "id": "D015",
+      "date": "2026-03-24",
+      "title": "Preact UI Dashboard Layer",
+      "decision": "Build real-time web dashboard using Preact + WebSocket for live visualization",
+      "rationale": "Interactive visualization of concurrent updates, conflicts, vector clocks. Makes distributed behavior tangible.",
+      "features": [
+        "Node topology (A ↔ B ↔ C)",
+        "Real-time sync events",
+        "Conflict panel showing siblings + clocks",
+        "Vector clock heatmap per key",
+        "Timeline/replay of operations",
+        "Write simulator (trigger conflicts on demand)"
+      ],
+      "tech_stack": "Preact (lightweight), WebSocket (live updates), Vite (build), Tailwind (styling)",
+      "benefit": "Visual demo immediately resonates. Can show causality, concurrency, and sync in real-time.",
+      "status": "approved"
     }
   ],
 
@@ -96,44 +160,162 @@
       "module": "2. storage/",
       "components": ["StorageBackend interface", "SQLiteBackend implementation", "JSONBackend for demo", "CRUD operations"],
       "priority": "P0",
-      "status": "todo"
+      "status": "✅ complete",
+      "tests": "41 passed",
+      "file": "src/repliqia/storage/backend.py"
     },
     {
       "module": "3. core/",
-      "components": ["Node class", "Version metadata", "Local store management", "Merge logic"],
+      "components": ["Node class", "Version metadata", "Local store management", "Merge logic", "Quorum parameters (N,R,W)"],
       "priority": "P0",
-      "status": "todo"
+      "status": "todo",
+      "file": "src/repliqia/core/node.py"
     },
     {
       "module": "4. replication/",
-      "components": ["PeerSync class", "Metadata exchange", "Conflict detection", "Sibling management"],
+      "components": ["PeerSync class", "Metadata exchange", "Conflict detection", "Sibling management", "Conflict visualization"],
       "priority": "P1",
-      "status": "todo"
+      "status": "todo",
+      "file": "src/repliqia/replication/sync.py",
+      "innovation": "Conflict visualization (D012)"
     },
     {
       "module": "5. api/",
-      "components": ["REST endpoints (PUT, GET, /sync, /clock, /state)", "Request/response serialization"],
+      "components": ["REST endpoints (PUT, GET, /sync, /clock, /state)", "Quorum enforcement", "Conflict response format", "Request/response serialization"],
       "priority": "P2",
-      "status": "todo"
+      "status": "todo",
+      "file": "src/repliqia/api/server.py",
+      "innovation": "Quorum-based reads/writes (D011)"
     },
     {
-      "module": "6. tests/",
-      "components": ["Unit tests per module", "Integration tests", "Scenario tests (sequential, concurrent, failure)"],
+      "module": "6. cli/",
+      "components": ["Click/Typer commands", "put/get/sync/show", "Conflict viewer", "Interactive REPL mode"],
+      "priority": "P2",
+      "status": "todo",
+      "file": "src/repliqia/cli/commands.py",
+      "decided": "D014",
+      "benefit": "Manual testing + step-by-step causality demonstration"
+    },
+    {
+      "module": "7. ui/ (Preact)",
+      "components": ["Preact dashboard", "WebSocket live updates", "Node topology visualization", "Conflict panel", "Vector clock display", "Operation timeline"],
+      "priority": "P2",
+      "status": "todo",
+      "file": "ui/src/App.jsx",
+      "tech": "Preact + Vite + Tailwind + WebSocket",
+      "decided": "D015",
+      "benefit": "Real-time interactive demo of distributed system behavior"
+    },
+    {
+      "module": "8. tests/ + demo/",
+      "components": ["Unit tests per module", "Integration tests", "Scenario tests (sequential, concurrent, failure)", "Multi-node demo (3 nodes)", "Conflict showcase", "CLI demo script"],
       "priority": "P1",
-      "status": "todo"
+      "status": "todo",
+      "file": "tests/, scripts/demo.py"
     }
   ],
 
   "tech_decisions_summary": {
-    "language": "Python 3.11+",
-    "framework": "Flask",
-    "package_manager": "UV",
+    "language": "Python 3.11+ (backend) + JavaScript (frontend)",
+    "framework": "Flask (backend REST API)",
+    "ui_framework": "Preact (lightweight, fast)",
+    "ui_build": "Vite + Tailwind CSS",
+    "package_manager": "UV (Python), npm (Node.js)",
     "storage": "SQLite (primary) + JSON (fallback)",
     "consistency": "Eventual Consistency (AP from CAP)",
     "causality": "Vector Clocks",
     "replication": "Peer-to-peer quorum-flexible sync",
-    "conflict_strategy": "Multi-version siblings"
+    "conflict_strategy": "Multi-version siblings",
+    "cli": "Click/Typer command framework",
+    "communication": "REST API (inter-node) + WebSocket (UI live updates)"
   },
 
-  "notes": "This file tracks ALL architectural decisions. When making a new decision, add a new entry with date, rationale, and status. Allows traceability for code review and viva presentation."
+  "system_architecture_layers": {
+    "layer_1_ui": {
+      "name": "Preact UI Dashboard",
+      "decided": "D015",
+      "shows": "Real-time node topology, conflicts, sync events, vector clocks",
+      "tech": "Preact + WebSocket",
+      "benefit": "Visual demo of distributed behavior"
+    },
+    "layer_2_cli": {
+      "name": "CLI Interface",
+      "decided": "D014",
+      "provides": "Manual node control, step-by-step causality testing",
+      "tech": "Click/Typer",
+      "benefit": "Viva-ready demonstrations and teaching"
+    },
+    "layer_3_api": {
+      "name": "REST API",
+      "decided": "D011",
+      "serves": "Inter-node communication, quorum enforcement",
+      "tech": "Flask + WebSocket",
+      "benefit": "Distributed system integration + live UI updates"
+    },
+    "layer_4_core": {
+      "name": "Core Distributed Engine",
+      "includes": "Replication, conflict detection, merge logic",
+      "foundation": "Vector Clock Engine (Module 1)"
+    }
+  },
+
+  "feature_set": {
+    "core_features": [
+      "Distributed key-value store (PUT/GET)",
+      "Vector clock engine per-key",
+      "Multi-version storage (siblings on conflict)",
+      "Peer-to-peer replication",
+      "Eventual consistency",
+      "Failure handling (offline nodes, recovery)"
+    ],
+    "interface_layers": [
+      {
+        "name": "Web Dashboard (Preact UI)",
+        "decided": "D015",
+        "features": ["Node topology visualization", "Real-time sync events", "Conflict panel with clocks", "Vector clock heatmap", "Operation timeline", "Write simulator"]
+      },
+      {
+        "name": "CLI Interface",
+        "decided": "D014",
+        "commands": ["put key value", "get key", "sync --with B", "show", "conflicts"]
+      }
+    ],
+    "innovation_features": [
+      {
+        "name": "Quorum-Based Consistency",
+        "decided": "D011",
+        "parameters": "N (replicas), R (read), W (write)",
+        "guarantee": "R + W > N implies consistency",
+        "impact": "Production-grade, Dynamo-level"
+      },
+      {
+        "name": "Conflict Visualization",
+        "decided": "D012",
+        "shows": "Concurrent versions with vector clocks",
+        "format": "JSON: {key, versions: [{vc, author, value}]}",
+        "impact": "Demonstrates distributed behavior clearly"
+      }
+    ]
+  },
+
+  "presentation_narrative": {
+    "title": "Repliqia: Dynamo-inspired Vector-Clock-Based Distributed Key-Value Store",
+    "hook": "Built a causality-aware distributed system without central coordination",
+    "key_points": [
+      "Vector clocks detect concurrent edits automatically",
+      "Multi-version storage preserves causality on conflicts",
+      "Quorum parameters (R/W/N) control consistency guarantees",
+      "Conflict visualization makes invisible system behavior tangible",
+      "Peer-to-peer replication enables high availability"
+    ],
+    "viva_questions": [
+      "How do vector clocks differ from timestamps?",
+      "What does 'eventual consistency' mean?",
+      "Explain concurrent conflict detection",
+      "Why R + W > N matters for consistency",
+      "How does the system handle node failures?"
+    ]
+  },
+
+  "notes": "This file tracks ALL architectural decisions and innovations. Multiple versions stored for concurrent updates = Repliqia itself eating its own dog food!"
 }
