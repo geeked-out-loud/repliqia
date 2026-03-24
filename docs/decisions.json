@@ -1,0 +1,137 @@
+{
+  "decisions": [
+    {
+      "id": "D001",
+      "date": "2026-03-24",
+      "title": "Project Language & Framework Choice",
+      "decision": "Python 3.11+ with Flask for REST API",
+      "rationale": "Python enables rapid prototyping of distributed logic. Flask is lightweight for microservices. Easier for student presentation.",
+      "alternatives_rejected": ["Node.js/Express (overkill for prototype), Go (compile overhead)"],
+      "status": "approved"
+    },
+    {
+      "id": "D002",
+      "date": "2026-03-24",
+      "title": "Package Manager",
+      "decision": "UV for Python dependency & environment management",
+      "rationale": "Modern, fast replacement for pip/venv. Single pyproject.toml. Better UX.",
+      "status": "approved"
+    },
+    {
+      "id": "D003",
+      "date": "2026-03-24",
+      "title": "Consistency Model",
+      "decision": "Eventual Consistency with AP from CAP theorem",
+      "rationale": "Matches Dynamo design. Prioritizes availability and partition tolerance. Nodes stay available even during network splits.",
+      "status": "approved"
+    },
+    {
+      "id": "D004",
+      "date": "2026-03-24",
+      "title": "Causality Tracking Mechanism",
+      "decision": "Vector Clocks (Fidge/Mattern 1988) instead of Lamport clocks",
+      "rationale": "Reports exact concurrency, not just total ordering. Needed for conflict detection. Core to Dynamo design.",
+      "status": "approved"
+    },
+    {
+      "id": "D005",
+      "date": "2026-03-24",
+      "title": "Local Storage Backend",
+      "decision": "SQLite for core implementation, JSON fallback for testing",
+      "rationale": "SQLite: persistent, transactional, no external service needed. JSON: simpler for demo scenarios.",
+      "status": "approved"
+    },
+    {
+      "id": "D006",
+      "date": "2026-03-24",
+      "title": "Multi-Version Storage (Sibling Conflicts)",
+      "decision": "Store all concurrent versions as siblings, return all on GET during conflict",
+      "rationale": "Matches Dynamo. Client chooses resolution or system auto-merges via configurable strategy. Preserves causality.",
+      "status": "approved"
+    },
+    {
+      "id": "D007",
+      "date": "2026-03-24",
+      "title": "Replication Model",
+      "decision": "Probabilistic quorum-based peer synchronization (flexible, eventual consistency)",
+      "rationale": "No fixed quorum size. Nodes sync with any available peers. Improves availability. Eventual convergence guaranteed.",
+      "status": "approved"
+    },
+    {
+      "id": "D008",
+      "date": "2026-03-24",
+      "title": "Project Structure",
+      "decision": "Modular: clock/ → storage/ → core/ → replication/ → api/",
+      "rationale": "Bottom-up dependency chain. Easy to test each layer independently. Clear separation of concerns.",
+      "status": "approved"
+    },
+    {
+      "id": "D009",
+      "date": "2026-03-24",
+      "title": "Version Control",
+      "decision": "Git with decision tracking in docs/decisions.json",
+      "rationale": "Standard version control. centralizes all decisions for viva/review.",
+      "status": "approved"
+    },
+    {
+      "id": "D010",
+      "date": "2026-03-24",
+      "title": "Implementation Order (Modules)",
+      "decision": "1. Vector Clock Engine → 2. Storage Adapter → 3. Core Node Service → 4. Replication Manager → 5. REST API → 6. Demo/Tests",
+      "rationale": "Bottom-up: lower layers first. Each layer tested before next depends on it.",
+      "status": "approved"
+    }
+  ],
+
+  "implementation_roadmap": [
+    {
+      "module": "1. clock/",
+      "components": ["VectorClock class", "Comparison logic (before/after/concurrent/equal)", "Unit tests"],
+      "priority": "P0",
+      "status": "todo"
+    },
+    {
+      "module": "2. storage/",
+      "components": ["StorageBackend interface", "SQLiteBackend implementation", "JSONBackend for demo", "CRUD operations"],
+      "priority": "P0",
+      "status": "todo"
+    },
+    {
+      "module": "3. core/",
+      "components": ["Node class", "Version metadata", "Local store management", "Merge logic"],
+      "priority": "P0",
+      "status": "todo"
+    },
+    {
+      "module": "4. replication/",
+      "components": ["PeerSync class", "Metadata exchange", "Conflict detection", "Sibling management"],
+      "priority": "P1",
+      "status": "todo"
+    },
+    {
+      "module": "5. api/",
+      "components": ["REST endpoints (PUT, GET, /sync, /clock, /state)", "Request/response serialization"],
+      "priority": "P2",
+      "status": "todo"
+    },
+    {
+      "module": "6. tests/",
+      "components": ["Unit tests per module", "Integration tests", "Scenario tests (sequential, concurrent, failure)"],
+      "priority": "P1",
+      "status": "todo"
+    }
+  ],
+
+  "tech_decisions_summary": {
+    "language": "Python 3.11+",
+    "framework": "Flask",
+    "package_manager": "UV",
+    "storage": "SQLite (primary) + JSON (fallback)",
+    "consistency": "Eventual Consistency (AP from CAP)",
+    "causality": "Vector Clocks",
+    "replication": "Peer-to-peer quorum-flexible sync",
+    "conflict_strategy": "Multi-version siblings"
+  },
+
+  "notes": "This file tracks ALL architectural decisions. When making a new decision, add a new entry with date, rationale, and status. Allows traceability for code review and viva presentation."
+}

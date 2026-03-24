@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repliqia"
+version = "0.1.0"
+description = "Dynamo-style distributed vector-clock-based key-value store with causal ordering and eventual consistency"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Repliqia Team", email = "dev@repliqia.local" }]
+requires-python = ">=3.11"
+
+dependencies = [
+    "flask>=3.0.0",           # REST API server
+    "requests>=2.31.0",       # HTTP client for peer sync
+    "pydantic>=2.0.0",        # Data validation
+    "pytest>=7.4.0",          # Testing
+    "pytest-asyncio>=0.21.0", # Async test support
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "ipython>=8.0.0",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+strict = true
