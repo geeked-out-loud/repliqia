@@ -176,7 +176,8 @@
       "module": "4. replication/",
       "components": ["PeerSync class", "Metadata exchange", "Conflict detection", "Sibling management", "Conflict visualization"],
       "priority": "P1",
-      "status": "todo",
+      "status": "✅ complete",
+      "tests": "22 passed",
       "file": "src/repliqia/replication/sync.py",
       "innovation": "Conflict visualization (D012)"
     },
