@@ -168,7 +168,8 @@
       "module": "3. core/",
       "components": ["Node class", "Version metadata", "Local store management", "Merge logic", "Quorum parameters (N,R,W)"],
       "priority": "P0",
-      "status": "todo",
+      "status": "✅ complete",
+      "tests": "25 passed",
       "file": "src/repliqia/core/node.py"
     },
     {
