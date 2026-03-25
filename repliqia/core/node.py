@@ -85,6 +85,11 @@ class Node:
         """Write a value locally.
         
         Increments vector clock, stores version with metadata.
+        Filters out causally dominated versions to prevent false conflicts.
+        
+        For local puts from the same node:
+        - Sequential writes (same node) → only newest is kept (no false conflict)
+        - Concurrent writes (different nodes, then merged) → both are kept (real conflict)
         
         Args:
             key: Key to write
@@ -95,15 +100,40 @@ class Node:
         """
         self.tick()  # Increment vector clock for this write
         
+        new_clock = self.get_clock()
+        
         version = Version(
             key=key,
             value=value,
             metadata=VersionMetadata(
-                vector_clock=self.get_clock(),
+                vector_clock=new_clock,
                 author=self.node_id,
                 timestamp=time.time(),
             ),
         )
+        
+        # Get existing versions and check for causally dominated ones
+        existing_versions = self.storage.get(key)
+        
+        if existing_versions:
+            # Analyze relationships between new version and existing ones
+            dominated_count = 0
+            
+            for existing in existing_versions:
+                existing_clock = existing.metadata.vector_clock
+                relationship = existing_clock.compare(new_clock)
+                
+                if relationship == "before":
+                    # New version causally dominates this old one
+                    dominated_count += 1
+            
+            # If new version dominates ALL existing versions → replace them
+            # (this handles same-node sequential writes, where each new write
+            # has a higher timestamp in the same node's component of the clock)
+            if dominated_count == len(existing_versions):
+                self.storage.remove(key)
+            # else: new version is concurrent with at least one existing version
+            # so we store it as a sibling (real conflict)
         
         self.storage.put(key, version)
         return version

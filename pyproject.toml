@@ -15,6 +15,7 @@ dependencies = [
     "flask>=3.0.0",           # REST API server
     "requests>=2.31.0",       # HTTP client for peer sync
     "pydantic>=2.0.0",        # Data validation
+    "click>=8.0.0",           # CLI framework
     "pytest>=7.4.0",          # Testing
     "pytest-asyncio>=0.21.0", # Async test support
 ]
@@ -27,9 +28,12 @@ dev = [
     "ipython>=8.0.0",
 ]
 
+[project.scripts]
+repliqia = "interface.cli:cli"
+
 # Package discovery (flat layout at root)
 [tool.hatch.build.targets.wheel]
-packages = ["repliqia"]
+packages = ["repliqia", "interface"]
 
 [tool.black]
 line-length = 100

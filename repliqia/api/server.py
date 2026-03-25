@@ -48,7 +48,8 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
     app = Flask(f"repliqia-node-{node.node_id}")
     app.node = node
     app.peer_nodes = peer_nodes or {}
-    app.quorum_acks: Dict[str, QuorumAck] = {}  # Track pending quorums
+    quorum_acks: Dict[str, QuorumAck] = {}  # Track pending quorums
+    app.quorum_acks = quorum_acks
 
     # ========== Key-Value Operations ==========
 

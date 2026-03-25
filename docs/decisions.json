@@ -183,11 +183,27 @@
     },
     {
       "module": "5. api/",
-      "components": ["REST endpoints (PUT, GET, /sync, /clock, /state)", "Quorum enforcement", "Conflict response format", "Request/response serialization"],
+      "components": ["REST endpoints (PUT, GET, DELETE, /sync, /clock, /state, /conflicts)", "Quorum enforcement (N,R,W)", "Conflict response format", "Request/response serialization", "Error handling"],
       "priority": "P2",
-      "status": "todo",
-      "file": "src/repliqia/api/server.py",
-      "innovation": "Quorum-based reads/writes (D011)"
+      "status": "✅ complete",
+      "tests": "31 passed",
+      "file": "repliqia/api/server.py",
+      "innovation": [
+        "Quorum-based reads/writes (D011): GET respects R parameter, PUT tracks W acknowledgements",
+        "Conflict visualization endpoint (D012): /conflicts returns concurrent versions with vector clocks"
+      ],
+      "endpoints": [
+        "PUT /kvstore/{key} - write with vector clock increment, W quorum tracking",
+        "GET /kvstore/{key} - read with R quorum consideration, conflict detection",
+        "DELETE /kvstore/{key} - tombstone deletion",
+        "POST /sync/{peer_node_id} - bidirectional peer synchronization",
+        "GET /conflicts - list all concurrent versions across all keys",
+        "GET /node/state - inspect complete node state",
+        "GET /node/clock - current vector clock view",
+        "GET /node/info - configuration and quorum parameters",
+        "GET /health - health check"
+      ],
+      "notes": "Flask REST API exposing Node + PeerSync operations to clients. All responses include vector clock metadata for full causality visibility. Conflict endpoint implements D012 visualization."
     },
     {
       "module": "6. cli/",
