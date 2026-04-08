@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
+import requests
 from flask import Flask, jsonify, request
 
+from repliqia.clock import VectorClock
 from repliqia.core import Node
-from repliqia.replication import ConflictView, PeerSync, SyncResult
-from repliqia.storage import Version
+from repliqia.replication import ConflictView
+from repliqia.storage import Version, VersionMetadata
 
 
 @dataclass
@@ -51,6 +55,277 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
     quorum_acks: Dict[str, QuorumAck] = {}  # Track pending quorums
     app.quorum_acks = quorum_acks
 
+    def _version_identity(version: Version) -> str:
+        """Stable identity for deduplication by vector clock."""
+        return json.dumps(version.metadata.vector_clock.to_dict(), sort_keys=True)
+
+    def _serialize_version(version: Version) -> dict[str, Any]:
+        """Serialize a version for peer transport."""
+        return version.to_dict()
+
+    def _serialize_versions(versions: Iterable[Version]) -> list[dict[str, Any]]:
+        """Serialize version list for JSON transport."""
+        return [_serialize_version(version) for version in versions]
+
+    def _deserialize_version(payload: dict[str, Any]) -> Optional[Version]:
+        """Deserialize version payload received from a peer."""
+        try:
+            metadata = payload["metadata"]
+            return Version(
+                key=payload["key"],
+                value=payload["value"],
+                metadata=VersionMetadata(
+                    vector_clock=VectorClock.from_dict(metadata["vector_clock"]),
+                    author=metadata["author"],
+                    timestamp=metadata.get("timestamp", 0.0),
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _collect_local_versions(
+        key: Optional[str] = None, keys: Optional[Iterable[str]] = None
+    ) -> list[Version]:
+        """Collect local versions, optionally filtered by key(s)."""
+        if key is not None:
+            return node.get(key)
+
+        collected: list[Version] = []
+        if keys is None:
+            source_keys = node.storage.keys()
+        else:
+            source_keys = sorted(set(keys))
+
+        for current_key in source_keys:
+            collected.extend(node.get(current_key))
+        return collected
+
+    def _merge_versions(incoming_versions: list[Version]) -> int:
+        """Merge incoming versions grouped by key and return new-version count."""
+        if not incoming_versions:
+            return 0
+
+        grouped: dict[str, list[Version]] = defaultdict(list)
+        for version in incoming_versions:
+            grouped[version.key].append(version)
+
+        new_versions = 0
+        for incoming_key, versions_for_key in grouped.items():
+            before = {_version_identity(version) for version in node.get(incoming_key)}
+            node.merge(versions_for_key)
+            after = {_version_identity(version) for version in node.get(incoming_key)}
+            new_versions += len(after - before)
+
+        return new_versions
+
+    def _has_concurrent_versions(versions: list[Version]) -> bool:
+        """Return True when at least one pair is concurrent."""
+        for i, first in enumerate(versions):
+            for second in versions[i + 1 :]:
+                if first.metadata.vector_clock.compare(second.metadata.vector_clock) == "concurrent":
+                    return True
+        return False
+
+    def _pick_latest_non_conflicting(versions: list[Version]) -> Version:
+        """Pick a latest version from an ordered set (no concurrency)."""
+        for candidate in versions:
+            if all(
+                other.metadata.vector_clock.compare(candidate.metadata.vector_clock)
+                in {"before", "equal"}
+                for other in versions
+            ):
+                return candidate
+        return versions[0]
+
+    def _collect_conflicts(keys: Optional[Iterable[str]] = None) -> list[ConflictView]:
+        """Collect conflicts for all keys or a filtered subset."""
+        if keys is None:
+            keys_to_check = node.storage.keys()
+        else:
+            keys_to_check = sorted(set(keys))
+
+        conflicts: list[ConflictView] = []
+        for current_key in keys_to_check:
+            versions = node.storage.get(current_key)
+            if len(versions) > 1 and _has_concurrent_versions(versions):
+                conflicts.append(ConflictView(key=current_key, versions=versions))
+        return conflicts
+
+    def _replicate_for_write(key: str, versions: list[Version]) -> tuple[int, list[dict[str, Any]]]:
+        """Replicate new write to peers until W acknowledgements are reached."""
+        acks = 1  # local write acknowledgement
+        peer_results: list[dict[str, Any]] = []
+
+        if node.W <= 1:
+            return acks, peer_results
+
+        payload = {
+            "origin_node_id": node.node_id,
+            "key": key,
+            "versions": _serialize_versions(versions),
+            "return_versions": False,
+        }
+
+        for peer_id, peer_url in app.peer_nodes.items():
+            if acks >= node.W:
+                break
+
+            endpoint = f"{peer_url.rstrip('/')}/sync/{node.node_id}"
+            try:
+                response = requests.post(endpoint, json=payload, timeout=3.0)
+                ok = 200 <= response.status_code < 300
+                result: dict[str, Any] = {
+                    "peer": peer_id,
+                    "ok": ok,
+                    "status": response.status_code,
+                }
+                if ok:
+                    acks += 1
+                else:
+                    result["error"] = response.text[:200]
+            except requests.RequestException as exc:
+                result = {
+                    "peer": peer_id,
+                    "ok": False,
+                    "error": str(exc),
+                }
+
+            peer_results.append(result)
+
+        return acks, peer_results
+
+    def _read_with_quorum(key: str) -> tuple[list[Version], int, list[dict[str, Any]]]:
+        """Read key locally + peers until R responses, then run read-repair."""
+        versions_by_clock: dict[str, Version] = {
+            _version_identity(version): version for version in node.get(key)
+        }
+        read_acks = 1  # local read attempt
+        peer_results: list[dict[str, Any]] = []
+
+        if node.R > 1:
+            for peer_id, peer_url in app.peer_nodes.items():
+                if read_acks >= node.R:
+                    break
+
+                endpoint = f"{peer_url.rstrip('/')}/internal/versions"
+                try:
+                    response = requests.get(endpoint, params={"key": key}, timeout=3.0)
+                    ok = response.status_code == 200
+                    peer_result: dict[str, Any] = {
+                        "peer": peer_id,
+                        "ok": ok,
+                        "status": response.status_code,
+                    }
+
+                    if ok:
+                        payload = response.json() if response.content else {}
+                        incoming_payload = payload.get("versions", [])
+                        valid_count = 0
+                        invalid_count = 0
+
+                        for raw_version in incoming_payload:
+                            incoming_version = _deserialize_version(raw_version)
+                            if incoming_version is None:
+                                invalid_count += 1
+                                continue
+
+                            valid_count += 1
+                            versions_by_clock.setdefault(
+                                _version_identity(incoming_version), incoming_version
+                            )
+
+                        peer_result["versions_returned"] = valid_count
+                        if invalid_count:
+                            peer_result["invalid_versions"] = invalid_count
+
+                        read_acks += 1
+                    else:
+                        peer_result["error"] = response.text[:200]
+                except requests.RequestException as exc:
+                    peer_result = {
+                        "peer": peer_id,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+
+                peer_results.append(peer_result)
+
+        if versions_by_clock:
+            _merge_versions(list(versions_by_clock.values()))
+
+        return node.get(key), read_acks, peer_results
+
+    def _orchestrate_sync(peer_node_id: str, key: Optional[str]) -> tuple[dict, int]:
+        """Coordinator mode: push local versions to peer and pull peer versions back."""
+        peer_url = app.peer_nodes.get(peer_node_id)
+        if not peer_url:
+            # Backward-compatible no-op for manual calls in single-node mode.
+            return {
+                "peer": peer_node_id,
+                "synced": True,
+                "mode": "noop",
+                "versions_exchanged": 0,
+                "warning": "Peer URL is not configured",
+            }, 200
+
+        outbound_versions = _collect_local_versions(key=key)
+        payload: dict[str, Any] = {
+            "origin_node_id": node.node_id,
+            "versions": _serialize_versions(outbound_versions),
+            "return_versions": True,
+        }
+        if key is not None:
+            payload["key"] = key
+
+        endpoint = f"{peer_url.rstrip('/')}/sync/{node.node_id}"
+        try:
+            peer_response = requests.post(endpoint, json=payload, timeout=5.0)
+        except requests.RequestException as exc:
+            return {
+                "peer": peer_node_id,
+                "synced": False,
+                "mode": "coordinator",
+                "error": str(exc),
+            }, 502
+
+        if not (200 <= peer_response.status_code < 300):
+            return {
+                "peer": peer_node_id,
+                "synced": False,
+                "mode": "coordinator",
+                "status": peer_response.status_code,
+                "error": peer_response.text[:300],
+            }, 502
+
+        peer_payload = peer_response.json() if peer_response.content else {}
+        inbound_payload = peer_payload.get("versions", [])
+        inbound_versions: list[Version] = []
+        invalid_count = 0
+
+        for raw_version in inbound_payload:
+            incoming_version = _deserialize_version(raw_version)
+            if incoming_version is None:
+                invalid_count += 1
+                continue
+            inbound_versions.append(incoming_version)
+
+        merged_versions = _merge_versions(inbound_versions)
+        involved_keys = {version.key for version in outbound_versions}
+        involved_keys.update(version.key for version in inbound_versions)
+        conflicts = _collect_conflicts(involved_keys if involved_keys else None)
+
+        return {
+            "peer": peer_node_id,
+            "synced": True,
+            "mode": "coordinator",
+            "pushed_versions": len(outbound_versions),
+            "pulled_versions": len(inbound_versions),
+            "merged_versions": merged_versions,
+            "invalid_versions": invalid_count,
+            "versions_exchanged": len(outbound_versions) + len(inbound_versions),
+            "conflicts": [conflict.to_dict() for conflict in conflicts],
+        }, 200
+
     # ========== Key-Value Operations ==========
 
     @app.route("/kvstore/<key>", methods=["PUT"])
@@ -67,7 +342,7 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
         # Write locally
         version = node.put(key, value)
 
-        response = {
+        response: dict[str, Any] = {
             "key": key,
             "value": value,
             "clock": version.metadata.vector_clock.to_dict(),
@@ -80,14 +355,20 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
             },
         }
 
-        # For W > 1, would contact peers asynchronously (simplified here)
-        if node.W == 1:
-            response["quorum"]["satisfied"] = True
-            return jsonify(response), 201
-        else:
-            # In production: async quorum collection
-            response["quorum"]["satisfied"] = node.W <= 1
-            return jsonify(response), 202  # Accepted, pending
+        acks, peer_results = _replicate_for_write(key=key, versions=[version])
+        quorum_ack = QuorumAck(
+            key=key,
+            version_clock=version.metadata.vector_clock.to_dict(),
+            acks=acks,
+            required=node.W,
+        )
+
+        response["quorum"]["acks"] = acks
+        response["quorum"]["satisfied"] = quorum_ack.is_satisfied()
+        response["quorum"]["peer_results"] = peer_results
+
+        status_code = 201 if quorum_ack.is_satisfied() else 202
+        return jsonify(response), status_code
 
     @app.route("/kvstore/<key>", methods=["GET"])
     def get_key(key: str) -> tuple[dict, int]:
@@ -97,14 +378,23 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
         If R=1, read from any replica (may be stale).
         Higher R requires reading from multiple nodes.
         """
-        versions = node.get(key)
+        versions, read_acks, peer_results = _read_with_quorum(key)
+        quorum_info = {
+            "R": node.R,
+            "required": node.R,
+            "acks": read_acks,
+            "satisfied": read_acks >= node.R,
+            "peer_results": peer_results,
+        }
 
         if not versions:
-            return jsonify({"error": f"Key '{key}' not found"}), 404
+            return jsonify({"error": f"Key '{key}' not found", "quorum": quorum_info}), 404
 
-        if len(versions) == 1:
-            # No conflict
-            v = versions[0]
+        has_conflict = len(versions) > 1 and _has_concurrent_versions(versions)
+
+        if not has_conflict:
+            # Return latest single value when versions are causally ordered.
+            v = versions[0] if len(versions) == 1 else _pick_latest_non_conflicting(versions)
             return (
                 jsonify(
                     {
@@ -113,13 +403,17 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
                         "clock": v.metadata.vector_clock.to_dict(),
                         "author": v.metadata.author,
                         "conflict": False,
-                        "quorum": {"R": node.R, "consistency": "strong"},
+                        "quorum": {
+                            **quorum_info,
+                            "consistency": "strong"
+                            if quorum_info["satisfied"]
+                            else "eventual",
+                        },
                     }
                 ),
                 200,
             )
         else:
-            # Conflict detected
             return (
                 jsonify(
                     {
@@ -134,7 +428,10 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
                             }
                             for v in versions
                         ],
-                        "quorum": {"R": node.R, "consistency": "eventual"},
+                        "quorum": {
+                            **quorum_info,
+                            "consistency": "eventual",
+                        },
                     }
                 ),
                 200,
@@ -148,51 +445,91 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
 
     # ========== Replication & Sync ==========
 
-    @app.route("/sync/<peer_node_id>", methods=["POST"])
-    def sync_peer(peer_node_id: str) -> tuple[dict, int]:
-        """Sync with a peer node.
-        
-        In production: this would be called by peer when contacting us.
-        For now: simplified bidirectional sync simulation.
-        """
-        data = request.get_json() or {}
-        incoming_versions = data.get("versions", [])
-
-        # Import Version from payload (simplified)
-        if incoming_versions:
-            # In production: deserialize properly
-            pass
-
+    @app.route("/internal/versions", methods=["GET"])
+    def internal_versions() -> tuple[dict, int]:
+        """Internal endpoint for peer reads and anti-entropy sync."""
+        key = request.args.get("key")
+        versions = _collect_local_versions(key=key)
         return (
             jsonify(
                 {
-                    "peer": peer_node_id,
-                    "synced": True,
-                    "versions_exchanged": len(incoming_versions),
+                    "node_id": node.node_id,
+                    "key": key,
+                    "count": len(versions),
+                    "versions": _serialize_versions(versions),
                 }
             ),
             200,
         )
 
+    @app.route("/sync/<peer_node_id>", methods=["POST"])
+    def sync_peer(peer_node_id: str) -> tuple[dict, int]:
+        """Sync with a peer node.
+        
+        Two modes:
+        - Inbound mode: peer sends concrete versions to merge.
+        - Coordinator mode: if no versions are provided, this node pushes local
+          versions to configured peer and pulls peer versions back.
+        """
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        key = payload.get("key") or request.args.get("key")
+        incoming_payload = payload.get("versions", [])
+        if not isinstance(incoming_payload, list):
+            incoming_payload = []
+
+        return_versions = bool(payload.get("return_versions", False))
+
+        if incoming_payload:
+            incoming_versions: list[Version] = []
+            invalid_versions = 0
+            for raw_version in incoming_payload:
+                if not isinstance(raw_version, dict):
+                    invalid_versions += 1
+                    continue
+
+                deserialized = _deserialize_version(raw_version)
+                if deserialized is None:
+                    invalid_versions += 1
+                    continue
+
+                incoming_versions.append(deserialized)
+
+            touched_keys = {version.key for version in incoming_versions}
+            merged_versions = _merge_versions(incoming_versions)
+            response: dict[str, Any] = {
+                "peer": peer_node_id,
+                "synced": True,
+                "mode": "inbound",
+                "received_versions": len(incoming_payload),
+                "merged_versions": merged_versions,
+                "invalid_versions": invalid_versions,
+                # Keep this field backward-compatible for existing clients/tests.
+                "versions_exchanged": len(incoming_payload),
+            }
+
+            if return_versions:
+                local_versions = _collect_local_versions(
+                    key=key,
+                    keys=touched_keys if key is None else None,
+                )
+                response["versions"] = _serialize_versions(local_versions)
+
+            conflicts = _collect_conflicts(keys=touched_keys if touched_keys else None)
+            if conflicts:
+                response["conflicts"] = [conflict.to_dict() for conflict in conflicts]
+
+            return jsonify(response), 200
+
+        orchestrated_response, status_code = _orchestrate_sync(peer_node_id=peer_node_id, key=key)
+        return jsonify(orchestrated_response), status_code
+
     @app.route("/conflicts", methods=["GET"])
     def list_conflicts() -> tuple[dict, int]:
         """Show all current conflicts (visualization D012)."""
-        conflicts: List[ConflictView] = []
-
-        for key in node.storage.keys():
-            versions = node.storage.get(key)
-            if len(versions) > 1:
-                # Check if concurrent (conflict)
-                for i, v1 in enumerate(versions):
-                    for v2 in versions[i + 1 :]:
-                        if (
-                            v1.metadata.vector_clock.compare(v2.metadata.vector_clock)
-                            == "concurrent"
-                        ):
-                            conflicts.append(ConflictView(key=key, versions=versions))
-                            break
-                    if conflicts and conflicts[-1].key == key:
-                        break
+        conflicts = _collect_conflicts()
 
         return (
             jsonify(

@@ -58,9 +58,11 @@ uv run python -m repliqia.api.server --node A --port 5000
 🚧 **Under Development** (v0.1.0)
 
 - [x] Project structure & dependencies
-- [ ] Module 1: Vector Clock Engine
-- [ ] Module 2: Storage Layer
-- [ ] Module 3: Core Node Service  
-- [ ] Module 4: Replication Engine
-- [ ] Module 5: REST API
-- [ ] Module 6: Tests & Demo
+- [x] Module 1: Vector Clock Engine
+- [x] Module 2: Storage Layer (JSON + SQLite)
+- [x] Module 3: Core Node Service
+- [x] Module 4: Replication Engine
+- [x] Module 5: REST API (conflicts, sync, quorum metadata)
+- [x] Module 6: Test Suite (unit + integration)
+- [ ] Multi-node runtime/demo scripts hardening
+- [ ] GUI dashboard (intentionally deferred)

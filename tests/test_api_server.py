@@ -4,11 +4,27 @@ import json
 from typing import Any, Dict
 
 import pytest
+import requests
 
 from repliqia.api import create_app
 from repliqia.clock import VectorClock
 from repliqia.core import Node
 from repliqia.storage import JSONBackend, Version, VersionMetadata
+
+
+class MockHTTPResponse:
+    """Simple mock HTTP response used for outbound peer call tests."""
+
+    def __init__(
+        self, status_code: int, payload: Dict[str, Any] | None = None, text: str = ""
+    ) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text
+        self.content = json.dumps(self._payload).encode("utf-8") if payload is not None else b""
+
+    def json(self) -> Dict[str, Any]:
+        return self._payload
 
 
 @pytest.fixture
@@ -268,6 +284,90 @@ class TestQuorumOperations:
         # Status code 202 (Accepted, pending quorum)
         assert response.status_code == 202
 
+    def test_quorum_w2_replicates_to_peer_and_satisfies(self, monkeypatch):
+        """W>1 should actively replicate and satisfy quorum when peer acks."""
+        backend = JSONBackend()
+        quorum_node = Node(node_id="node-1", storage=backend, N=3, R=1, W=2)
+        app = create_app(quorum_node, peer_nodes={"node-2": "http://node-2:5000"})
+        client = app.test_client()
+
+        calls = []
+
+        def fake_post(url, json, timeout):
+            calls.append((url, json, timeout))
+            return MockHTTPResponse(200, {"synced": True})
+
+        monkeypatch.setattr("repliqia.api.server.requests.post", fake_post)
+
+        response = client.put("/kvstore/item", json={"value": {"qty": 1}})
+        data = response.get_json()
+
+        assert response.status_code == 201
+        assert data["quorum"]["acks"] == 2
+        assert data["quorum"]["satisfied"] is True
+        assert len(calls) == 1
+        assert calls[0][1]["versions"][0]["key"] == "item"
+
+    def test_quorum_w2_unsatisfied_when_peer_unavailable(self, monkeypatch):
+        """W>1 stays pending when peer replication fails."""
+        backend = JSONBackend()
+        quorum_node = Node(node_id="node-1", storage=backend, N=3, R=1, W=2)
+        app = create_app(quorum_node, peer_nodes={"node-2": "http://node-2:5000"})
+        client = app.test_client()
+
+        def fake_post(url, json, timeout):
+            raise requests.RequestException("peer unavailable")
+
+        monkeypatch.setattr("repliqia.api.server.requests.post", fake_post)
+
+        response = client.put("/kvstore/item", json={"value": {"qty": 1}})
+        data = response.get_json()
+
+        assert response.status_code == 202
+        assert data["quorum"]["acks"] == 1
+        assert data["quorum"]["satisfied"] is False
+        assert data["quorum"]["peer_results"][0]["ok"] is False
+
+    def test_read_quorum_r2_fetches_from_peer(self, monkeypatch):
+        """R>1 should fetch versions from peers and perform read-repair."""
+        backend = JSONBackend()
+        quorum_node = Node(node_id="node-1", storage=backend, N=3, R=2, W=1)
+        app = create_app(quorum_node, peer_nodes={"node-2": "http://node-2:5000"})
+        client = app.test_client()
+
+        peer_version = Version(
+            key="remote-key",
+            value={"origin": "node-2"},
+            metadata=VersionMetadata(
+                vector_clock=VectorClock({"node-2": 1}),
+                author="node-2",
+                timestamp=1.0,
+            ),
+        )
+
+        def fake_get(url, params, timeout):
+            return MockHTTPResponse(
+                200,
+                {
+                    "node_id": "node-2",
+                    "key": "remote-key",
+                    "versions": [peer_version.to_dict()],
+                    "count": 1,
+                },
+            )
+
+        monkeypatch.setattr("repliqia.api.server.requests.get", fake_get)
+
+        response = client.get("/kvstore/remote-key")
+        data = response.get_json()
+
+        assert response.status_code == 200
+        assert data["value"]["origin"] == "node-2"
+        assert data["quorum"]["R"] == 2
+        assert data["quorum"]["acks"] == 2
+        assert data["quorum"]["satisfied"] is True
+        assert quorum_node.storage.exists("remote-key")
+
 
 class TestSyncOperations:
     """Test bidirectional sync endpoints."""
@@ -288,6 +388,79 @@ class TestSyncOperations:
         )
         data = response.get_json()
         assert data["versions_exchanged"] == 2
+
+    def test_sync_endpoint_deserializes_and_merges_versions(self, client, node):
+        """Inbound sync payload should deserialize and merge into storage."""
+        incoming = Version(
+            key="peer-key",
+            value={"source": "node-2"},
+            metadata=VersionMetadata(
+                vector_clock=VectorClock({"node-2": 1}),
+                author="node-2",
+                timestamp=1.0,
+            ),
+        )
+
+        response = client.post("/sync/node-2", json={"versions": [incoming.to_dict()]})
+        data = response.get_json()
+
+        assert response.status_code == 200
+        assert data["merged_versions"] == 1
+        stored_versions = node.storage.get("peer-key")
+        assert len(stored_versions) == 1
+        assert stored_versions[0].value["source"] == "node-2"
+
+    def test_sync_endpoint_orchestrates_with_configured_peer(self, monkeypatch):
+        """Coordinator sync should push local data and pull peer versions."""
+        backend = JSONBackend()
+        local_node = Node(node_id="node-1", storage=backend, N=3, R=1, W=1)
+        local_node.put("local-key", {"owner": "node-1"})
+        app = create_app(local_node, peer_nodes={"node-2": "http://node-2:5000"})
+        client = app.test_client()
+
+        peer_version = Version(
+            key="peer-key",
+            value={"owner": "node-2"},
+            metadata=VersionMetadata(
+                vector_clock=VectorClock({"node-2": 1}),
+                author="node-2",
+                timestamp=2.0,
+            ),
+        )
+
+        def fake_post(url, json, timeout):
+            assert url.endswith("/sync/node-1")
+            assert json["return_versions"] is True
+            return MockHTTPResponse(
+                200,
+                {
+                    "synced": True,
+                    "versions": [peer_version.to_dict()],
+                    "versions_exchanged": 1,
+                },
+            )
+
+        monkeypatch.setattr("repliqia.api.server.requests.post", fake_post)
+
+        response = client.post("/sync/node-2", json={})
+        data = response.get_json()
+
+        assert response.status_code == 200
+        assert data["mode"] == "coordinator"
+        assert data["pushed_versions"] >= 1
+        assert data["pulled_versions"] == 1
+        assert local_node.storage.exists("peer-key")
+
+    def test_internal_versions_endpoint_returns_serialized_versions(self, client):
+        """Internal versions endpoint should return serialized local versions."""
+        client.put("/kvstore/item", json={"value": {"x": 1}})
+
+        response = client.get("/internal/versions?key=item")
+        data = response.get_json()
+
+        assert response.status_code == 200
+        assert data["count"] == 1
+        assert data["versions"][0]["key"] == "item"
 
 
 class TestHealthAndErrors:
