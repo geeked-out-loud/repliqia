@@ -6,7 +6,7 @@ import time
 from typing import List, Optional
 
 from repliqia.clock import VectorClock
-from repliqia.storage import JSONBackend, StorageBackend, Version, VersionMetadata
+from repliqia.storage import SQLiteBackend, StorageBackend, Version, VersionMetadata
 
 
 class Node:
@@ -31,13 +31,13 @@ class Node:
         
         Args:
             node_id: Unique identifier for this node (e.g., "A", "B", "C")
-            storage: Storage backend (defaults to JSONBackend for demos)
+            storage: Storage backend (defaults to SQLiteBackend :memory: for demos)
             N: Replication factor (how many nodes should hold replicas)
             R: Read quorum (how many nodes must agree on read)
             W: Write quorum (how many nodes must acknowledge write)
         """
         self.node_id = node_id
-        self.storage = storage or JSONBackend()
+        self.storage = storage or SQLiteBackend(":memory:")
         
         # Quorum parameters (Dynamo-style)
         self.N = N  # Replication factor

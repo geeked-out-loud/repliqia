@@ -9,7 +9,7 @@ import requests
 from repliqia.api import create_app
 from repliqia.clock import VectorClock
 from repliqia.core import Node
-from repliqia.storage import JSONBackend, Version, VersionMetadata
+from repliqia.storage import SQLiteBackend, Version, VersionMetadata
 
 
 class MockHTTPResponse:
@@ -29,8 +29,8 @@ class MockHTTPResponse:
 
 @pytest.fixture
 def backend():
-    """Create fresh JSON backend for each test."""
-    return JSONBackend()
+    """Create fresh SQLite backend for each test."""
+    return SQLiteBackend(":memory:")
 
 
 @pytest.fixture
@@ -270,9 +270,9 @@ class TestQuorumOperations:
     def test_quorum_w2_requires_coordination(self, app):
         """W>1 should require multi-node coordination."""
         from repliqia.core import Node
-        from repliqia.storage import JSONBackend
+        from repliqia.storage import SQLiteBackend
 
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
         node = Node(node_id="node-1", storage=backend, N=3, R=1, W=2)
         app = create_app(node)
         client = app.test_client()
@@ -286,7 +286,7 @@ class TestQuorumOperations:
 
     def test_quorum_w2_replicates_to_peer_and_satisfies(self, monkeypatch):
         """W>1 should actively replicate and satisfy quorum when peer acks."""
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
         quorum_node = Node(node_id="node-1", storage=backend, N=3, R=1, W=2)
         app = create_app(quorum_node, peer_nodes={"node-2": "http://node-2:5000"})
         client = app.test_client()
@@ -310,7 +310,7 @@ class TestQuorumOperations:
 
     def test_quorum_w2_unsatisfied_when_peer_unavailable(self, monkeypatch):
         """W>1 stays pending when peer replication fails."""
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
         quorum_node = Node(node_id="node-1", storage=backend, N=3, R=1, W=2)
         app = create_app(quorum_node, peer_nodes={"node-2": "http://node-2:5000"})
         client = app.test_client()
@@ -330,7 +330,7 @@ class TestQuorumOperations:
 
     def test_read_quorum_r2_fetches_from_peer(self, monkeypatch):
         """R>1 should fetch versions from peers and perform read-repair."""
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
         quorum_node = Node(node_id="node-1", storage=backend, N=3, R=2, W=1)
         app = create_app(quorum_node, peer_nodes={"node-2": "http://node-2:5000"})
         client = app.test_client()
@@ -412,7 +412,7 @@ class TestSyncOperations:
 
     def test_sync_endpoint_orchestrates_with_configured_peer(self, monkeypatch):
         """Coordinator sync should push local data and pull peer versions."""
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
         local_node = Node(node_id="node-1", storage=backend, N=3, R=1, W=1)
         local_node.put("local-key", {"owner": "node-1"})
         app = create_app(local_node, peer_nodes={"node-2": "http://node-2:5000"})

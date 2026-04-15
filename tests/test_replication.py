@@ -250,6 +250,37 @@ class TestPeerSyncConflicts:
         conflicted_keys = [c.key for c in result.conflicts_detected]
         assert "key" not in conflicted_keys
 
+    def test_sync_direction_does_not_override_newer_descendant(self) -> None:
+        """Sync initiated from B->A still keeps A's newer descendant version."""
+        node_a = Node("A")
+        node_b = Node("B")
+
+        # B writes an initial version.
+        v1 = node_b.put("key", {"v": 1, "author": "B"})
+
+        # A learns B's version and writes a descendant update.
+        node_a.merge([v1])
+        node_a.put("key", {"v": 2, "author": "A"})
+
+        # Initiate sync in the opposite direction (B -> A).
+        sync = PeerSync(node_b, node_a)
+        result = sync.sync()
+
+        # Direction should not matter: both converge to A's newer descendant.
+        assert result.conflicts_detected == []
+
+        versions_a = node_a.get("key")
+        versions_b = node_b.get("key")
+
+        assert len(versions_a) == 1
+        assert len(versions_b) == 1
+        assert versions_a[0].value == {"v": 2, "author": "A"}
+        assert versions_b[0].value == {"v": 2, "author": "A"}
+        assert (
+            versions_a[0].metadata.vector_clock.to_dict()
+            == versions_b[0].metadata.vector_clock.to_dict()
+        )
+
 
 class TestPeerSyncDivergence:
     """Divergence measurement."""
