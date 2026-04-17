@@ -58,3 +58,12 @@ logs/
 
 tools/
 docs/
+
+# Node / frontend
+node_modules/
+interface/gui/node_modules/
+dist/
+build/
+
+# OS / misc
+.DS_Store
