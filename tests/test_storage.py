@@ -6,7 +6,6 @@ from pathlib import Path
 
 from repliqia.clock import VectorClock
 from repliqia.storage import (
-    JSONBackend,
     SQLiteBackend,
     StorageBackend,
     Version,
@@ -17,12 +16,10 @@ from repliqia.storage import (
 class TestStorageBackendInterface:
     """Generic tests for any storage backend (abstract interface)."""
 
-    @pytest.fixture(params=["json", "sqlite_memory", "sqlite_file"])
+    @pytest.fixture(params=["sqlite_memory", "sqlite_file"])
     def backend(self, request: pytest.FixtureRequest) -> StorageBackend:
         """Provide different backend implementations."""
-        if request.param == "json":
-            return JSONBackend()
-        elif request.param == "sqlite_memory":
+        if request.param == "sqlite_memory":
             return SQLiteBackend(":memory:")
         else:  # sqlite_file
             with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -175,30 +172,6 @@ class TestStorageBackendInterface:
         assert retrieved.value == complex_value
 
 
-class TestJSONBackend:
-    """JSON-specific tests."""
-
-    def test_serialization_round_trip(self) -> None:
-        """to_dict / from_dict round-trip."""
-        backend = JSONBackend()
-        backend.put(
-            "key1",
-            Version(
-                key="key1",
-                value={"x": 1},
-                metadata=VersionMetadata(
-                    vector_clock=VectorClock.from_dict({"A": 1}),
-                    author="A",
-                    timestamp=0.0,
-                ),
-            ),
-        )
-
-        # Export and re-import
-        exported = backend.to_dict()
-        restored = JSONBackend.from_dict(exported)
-
-        assert restored.get("key1") == backend.get("key1")
 
 
 class TestSQLiteBackend:
@@ -286,7 +259,7 @@ class TestDynamoScenarios:
 
     def test_scenario_concurrent_writes(self) -> None:
         """Two nodes write concurrently, both versions stored."""
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
 
         # Node A writes
         backend.put(
@@ -324,7 +297,7 @@ class TestDynamoScenarios:
 
     def test_scenario_read_repair_via_siblings(self) -> None:
         """Sibling detection enables read repair during sync."""
-        backend = JSONBackend()
+        backend = SQLiteBackend(":memory:")
 
         # Store multiple versions (typical after network partition)
         v1 = Version(

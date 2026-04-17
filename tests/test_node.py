@@ -4,7 +4,7 @@ import pytest
 import time
 from repliqia.core import Node
 from repliqia.clock import VectorClock
-from repliqia.storage import JSONBackend, SQLiteBackend, Version, VersionMetadata
+from repliqia.storage import SQLiteBackend, Version, VersionMetadata
 
 
 class TestNodeBasics:

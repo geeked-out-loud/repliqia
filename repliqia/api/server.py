@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
@@ -13,7 +15,7 @@ from flask import Flask, jsonify, request
 from repliqia.clock import VectorClock
 from repliqia.core import Node
 from repliqia.replication import ConflictView
-from repliqia.storage import Version, VersionMetadata
+from repliqia.storage import SQLiteBackend, Version, VersionMetadata
 
 
 @dataclass
@@ -366,6 +368,12 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
         response["quorum"]["acks"] = acks
         response["quorum"]["satisfied"] = quorum_ack.is_satisfied()
         response["quorum"]["peer_results"] = peer_results
+        
+        # Include node state snapshot for frontend
+        response["node_state"] = node.get_state()
+        
+        # Include node state snapshot for frontend
+        response["node_state"] = node.get_state()
 
         status_code = 201 if quorum_ack.is_satisfied() else 202
         return jsonify(response), status_code
@@ -386,9 +394,13 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
             "satisfied": read_acks >= node.R,
             "peer_results": peer_results,
         }
-
+        
         if not versions:
-            return jsonify({"error": f"Key '{key}' not found", "quorum": quorum_info}), 404
+            return jsonify({
+                "error": f"Key '{key}' not found",
+                "quorum": quorum_info,
+                "node_state": node.get_state()
+            }), 404
 
         has_conflict = len(versions) > 1 and _has_concurrent_versions(versions)
 
@@ -403,6 +415,7 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
                         "clock": v.metadata.vector_clock.to_dict(),
                         "author": v.metadata.author,
                         "conflict": False,
+                        "node_state": node.get_state(),
                         "quorum": {
                             **quorum_info,
                             "consistency": "strong"
@@ -428,6 +441,7 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
                             }
                             for v in versions
                         ],
+                        "node_state": node.get_state(),
                         "quorum": {
                             **quorum_info,
                             "consistency": "eventual",
@@ -589,3 +603,62 @@ def create_app(node: Node, peer_nodes: Optional[Dict[str, str]] = None) -> Flask
         return jsonify({"error": "Internal server error", "details": str(error)}), 500
 
     return app
+
+
+def _parse_peers(raw_peers: str) -> dict[str, str]:
+    """Parse peers from CSV format: NODE=http://host:port."""
+    peers: dict[str, str] = {}
+    if not raw_peers:
+        return peers
+
+    for item in raw_peers.split(","):
+        token = item.strip()
+        if not token or "=" not in token:
+            continue
+
+        node_id, url = token.split("=", 1)
+        node_id = node_id.strip().upper()
+        url = url.strip().rstrip("/")
+        if node_id and url:
+            peers[node_id] = url
+
+    return peers
+
+
+def main() -> None:
+    """CLI entrypoint for running a node API server process."""
+    parser = argparse.ArgumentParser(description="Run a Repliqia node API server")
+    parser.add_argument("--node", required=True, help="Node ID, e.g. A")
+    parser.add_argument("--port", type=int, required=True, help="Port for the API server")
+    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
+    # Storage is always SQLite (JSON backend removed)
+    parser.add_argument("--db-dir", type=str, help="Directory for database files (optional)")
+    parser.add_argument("--n", type=int, default=3, help="Replication factor N")
+    parser.add_argument("--r", type=int, default=2, help="Read quorum R")
+    parser.add_argument("--w", type=int, default=2, help="Write quorum W")
+    parser.add_argument(
+        "--peers",
+        default="",
+        help="Optional peers in CSV format: B=http://localhost:5002,C=http://localhost:5003",
+    )
+    args = parser.parse_args()
+
+    node_id = args.node.upper()
+    
+    # Determine database path
+    if args.db_dir:
+        db_dir = Path(args.db_dir)
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db_path = db_dir / f"repliqia_{node_id}.db"
+    else:
+        db_path = Path(f"repliqia_{node_id}.db")
+    
+    backend = SQLiteBackend(str(db_path))
+
+    node = Node(node_id=node_id, storage=backend, N=args.n, R=args.r, W=args.w)
+    app = create_app(node, peer_nodes=_parse_peers(args.peers))
+    app.run(host=args.host, port=args.port, debug=False)
+
+
+if __name__ == "__main__":
+    main()
