@@ -55,3 +55,6 @@ logs/
 
 # UV
 .uv/
+
+tools/
+docs/
